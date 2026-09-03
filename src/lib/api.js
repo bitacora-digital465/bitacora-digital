@@ -109,9 +109,13 @@ export async function removeUpdate(id) {
 --------------------------------------------------------------------- */
 
 export async function seedIfEmpty() {
-  const { count, error } = await supabase.from("companies").select("*", { count: "exact", head: true });
-  if (error) throw error;
-  if (count && count > 0) return;
+  const { data, error } = await supabase
+  .from("companies")
+  .select("id");
+
+if (error) throw error;
+
+if (data && data.length > 0) return;
 
   for (const companyName of SEED_COMPANIES) {
     const { data: company, error: companyError } = await supabase
