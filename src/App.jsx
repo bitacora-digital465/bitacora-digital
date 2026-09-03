@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Home, History, Users, Plus } from "lucide-react";
+import { Home, History, Users, Plus, LogOut } from "lucide-react";
+
 import { NavItem, Toast, ConfirmDialog } from "./components/ui.jsx";
 import UpdateModal from "./components/UpdateModal.jsx";
 import InicioView from "./components/InicioView.jsx";
@@ -25,48 +26,94 @@ import {
   seedIfEmpty,
 } from "./lib/api";
 
-export default function App() {
-  const [status, setStatus] = useState("loading");
-  const [errorMsg, setErrorMsg] = useState("");
 
+export default function App() {
+
+  // --------------------------------------------------
   // AUTENTICACIÓN
+  // --------------------------------------------------
+
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+
+
+  // --------------------------------------------------
+  // ESTADO DE LA APP
+  // --------------------------------------------------
+
+  const [status, setStatus] = useState("loading");
+  // loading | ready | error | unconfigured
+
+  const [errorMsg, setErrorMsg] = useState("");
 
   const [companies, setCompanies] = useState([]);
   const [clients, setClients] = useState([]);
   const [updates, setUpdates] = useState([]);
 
   const [view, setView] = useState("inicio");
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUpdate, setEditingUpdate] = useState(null);
+
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [toast, setToast] = useState({ show: false, message: "" });
+
+  const [toast, setToast] = useState({
+    show: false,
+    message: "",
+  });
+
+
+  // --------------------------------------------------
+  // TOAST
+  // --------------------------------------------------
 
   const showToast = (message) => {
-    setToast({ show: true, message });
+    setToast({
+      show: true,
+      message,
+    });
 
     setTimeout(() => {
-      setToast({ show: false, message: "" });
+      setToast({
+        show: false,
+        message: "",
+      });
     }, 2200);
   };
 
+
   // --------------------------------------------------
-  // AUTENTICACIÓN CON SUPABASE
+  // COMPROBAR SESIÓN DE SUPABASE
   // --------------------------------------------------
 
   useEffect(() => {
+
     if (!supabaseConfigured) {
       setAuthLoading(false);
+      setStatus("unconfigured");
       return;
     }
 
     let mounted = true;
 
     const checkSession = async () => {
+
       const {
         data: { session },
+        error,
       } = await supabase.auth.getSession();
+
+      if (error) {
+        console.error(error);
+
+        if (mounted) {
+          setErrorMsg(error.message);
+          setStatus("error");
+          setAuthLoading(false);
+        }
+
+        return;
+      }
 
       if (mounted) {
         setUser(session?.user ?? null);
@@ -76,23 +123,38 @@ export default function App() {
 
     checkSession();
 
+
+    // Escuchar cambios de sesión:
+    // login / logout / refresh token
+
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+
+      if (!mounted) return;
+
       setUser(session?.user ?? null);
+
+      if (!session) {
+        setStatus("loading");
+      }
     });
+
 
     return () => {
       mounted = false;
       subscription.unsubscribe();
     };
+
   }, []);
 
+
   // --------------------------------------------------
-  // CARGAR INFORMACIÓN DE LA BITÁCORA
+  // CARGAR INFORMACIÓN DE SUPABASE
   // --------------------------------------------------
 
   const loadAll = useCallback(async () => {
+
     const [c, cl, u] = await Promise.all([
       fetchCompanies(),
       fetchClients(),
@@ -102,33 +164,58 @@ export default function App() {
     setCompanies(c);
     setClients(cl);
     setUpdates(u);
+
   }, []);
 
+
+  // --------------------------------------------------
+  // CARGAR BITÁCORA CUANDO HAY USUARIO
+  // --------------------------------------------------
+
   useEffect(() => {
-    if (!supabaseConfigured || !user) {
+
+    if (!supabaseConfigured) {
       return;
     }
 
+    if (authLoading) {
+      return;
+    }
+
+    if (!user) {
+      return;
+    }
+
+
     (async () => {
+
       try {
+
         setStatus("loading");
 
         await seedIfEmpty();
+
         await loadAll();
 
         setStatus("ready");
+
       } catch (err) {
+
         console.error(err);
 
         setErrorMsg(
           err.message ||
-            "Error desconocido al conectar con Supabase."
+          "Error desconocido al conectar con Supabase."
         );
 
         setStatus("error");
+
       }
+
     })();
-  }, [user, loadAll]);
+
+  }, [user, authLoading, loadAll]);
+
 
   // --------------------------------------------------
   // ACTUALIZACIONES ENRIQUECIDAS
@@ -138,6 +225,7 @@ export default function App() {
     () =>
       updates.map((u) => ({
         ...u,
+
         companyName:
           companies.find((c) => c.id === u.companyId)?.name ??
           "Empresa eliminada",
@@ -146,29 +234,56 @@ export default function App() {
           clients.find((c) => c.id === u.clientId)?.name ??
           "Cliente eliminado",
       })),
+
     [updates, companies, clients]
   );
 
+
   // --------------------------------------------------
-  // ACTUALIZACIONES
+  // NUEVA ACTUALIZACIÓN
   // --------------------------------------------------
 
   const openNew = () => {
+
     setEditingUpdate(null);
+
     setModalOpen(true);
+
   };
+
+
+  // --------------------------------------------------
+  // EDITAR ACTUALIZACIÓN
+  // --------------------------------------------------
 
   const openEdit = (u) => {
+
     setEditingUpdate(u);
+
     setModalOpen(true);
+
   };
 
+
+  // --------------------------------------------------
+  // GUARDAR ACTUALIZACIÓN
+  // --------------------------------------------------
+
   const handleSaveUpdate = async (fields) => {
+
     try {
+
       if (editingUpdate) {
-        await editUpdateRow(editingUpdate.id, fields);
+
+        await editUpdateRow(
+          editingUpdate.id,
+          fields
+        );
+
       } else {
+
         await createUpdateRow(fields);
+
       }
 
       await loadAll();
@@ -176,103 +291,237 @@ export default function App() {
       setModalOpen(false);
 
       showToast("Actualización guardada ✓");
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo guardar la actualización.");
+
+      showToast(
+        "No se pudo guardar. Intenta de nuevo."
+      );
+
     }
+
   };
 
+
+  // --------------------------------------------------
+  // ELIMINAR ACTUALIZACIÓN
+  // --------------------------------------------------
+
   const handleDeleteUpdate = async () => {
+
+    if (!deleteTarget) return;
+
     try {
+
       await removeUpdate(deleteTarget.id);
 
       await loadAll();
 
       showToast("Actualización eliminada");
+
     } catch (err) {
+
       console.error(err);
 
-      showToast("No se pudo eliminar. Intenta de nuevo.");
+      showToast(
+        "No se pudo eliminar. Intenta de nuevo."
+      );
+
     } finally {
+
       setDeleteTarget(null);
+
     }
+
   };
+
 
   // --------------------------------------------------
   // EMPRESAS
   // --------------------------------------------------
 
   const handleAddCompany = async (name) => {
+
     try {
+
       await createCompany(name);
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo agregar la empresa.");
+
+      showToast(
+        "No se pudo agregar la empresa."
+      );
+
     }
+
   };
+
 
   const handleEditCompany = async (id, name) => {
+
     try {
+
       await renameCompany(id, name);
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo renombrar la empresa.");
+
+      showToast(
+        "No se pudo renombrar la empresa."
+      );
+
     }
+
   };
 
+
   const handleDeleteCompany = async (id) => {
+
     try {
+
       await removeCompany(id);
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo eliminar la empresa.");
+
+      showToast(
+        "No se pudo eliminar la empresa."
+      );
+
     }
+
   };
+
 
   // --------------------------------------------------
   // CLIENTES
   // --------------------------------------------------
 
-  const handleAddClient = async (companyId, name) => {
+  const handleAddClient = async (
+    companyId,
+    name
+  ) => {
+
     try {
-      await createClientRow(companyId, name);
+
+      await createClientRow(
+        companyId,
+        name
+      );
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo agregar el cliente.");
+
+      showToast(
+        "No se pudo agregar el cliente."
+      );
+
     }
+
   };
 
-  const handleEditClient = async (id, name) => {
+
+  const handleEditClient = async (
+    id,
+    name
+  ) => {
+
     try {
+
       await renameClient(id, name);
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo renombrar el cliente.");
+
+      showToast(
+        "No se pudo renombrar el cliente."
+      );
+
     }
+
   };
+
 
   const handleDeleteClient = async (id) => {
+
     try {
+
       await removeClient(id);
+
       await loadAll();
+
     } catch (err) {
+
       console.error(err);
-      showToast("No se pudo eliminar el cliente.");
+
+      showToast(
+        "No se pudo eliminar el cliente."
+      );
+
     } finally {
+
       setDeleteTarget(null);
+
     }
+
   };
+
+
+  // --------------------------------------------------
+  // CERRAR SESIÓN
+  // --------------------------------------------------
+
+  const handleLogout = async () => {
+
+    try {
+
+      await supabase.auth.signOut();
+
+      setUser(null);
+
+      setCompanies([]);
+      setClients([]);
+      setUpdates([]);
+
+      setView("inicio");
+
+    } catch (err) {
+
+      console.error(err);
+
+      showToast(
+        "No se pudo cerrar sesión."
+      );
+
+    }
+
+  };
+
 
   // --------------------------------------------------
   // SUPABASE NO CONFIGURADO
   // --------------------------------------------------
 
-  if (!supabaseConfigured) {
+  if (status === "unconfigured") {
+
     return (
       <FullScreenMessage
         title="Falta configurar Supabase"
@@ -299,78 +548,105 @@ export default function App() {
         }
       />
     );
+
   }
 
-  // --------------------------------------------------
-  // COMPROBANDO LOGIN
-  // --------------------------------------------------
-
-  if (authLoading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-[#05070c]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
-      </div>
-    );
-  }
-
-  // --------------------------------------------------
-  // SI NO HAY USUARIO → MOSTRAR LOGIN
-  // --------------------------------------------------
-
-  if (!user) {
-    return <Login />;
-  }
 
   // --------------------------------------------------
   // ERROR DE SUPABASE
   // --------------------------------------------------
 
   if (status === "error") {
+
     return (
       <FullScreenMessage
         title="No se pudo conectar con Supabase"
         detail={
           <>
-            <p className="mb-2">{errorMsg}</p>
+            <p className="mb-2">
+              {errorMsg}
+            </p>
 
             <p>
               Verifica que ejecutaste el SQL de{" "}
               <code className="rounded bg-white/10 px-1.5 py-0.5">
                 supabase/schema.sql
               </code>{" "}
-              y que las credenciales de Supabase son correctas.
+              y que las credenciales del archivo{" "}
+              <code className="rounded bg-white/10 px-1.5 py-0.5">
+                .env
+              </code>{" "}
+              son correctas.
             </p>
           </>
         }
       />
     );
+
   }
 
+
   // --------------------------------------------------
-  // CARGANDO LA BITÁCORA
+  // COMPROBANDO SESIÓN
+  // --------------------------------------------------
+
+  if (authLoading) {
+
+    return (
+      <LoadingScreen />
+    );
+
+  }
+
+
+  // --------------------------------------------------
+  // SIN SESIÓN → LOGIN
+  // --------------------------------------------------
+
+  if (!user) {
+
+    return (
+      <Login />
+    );
+
+  }
+
+
+  // --------------------------------------------------
+  // CARGANDO BITÁCORA
   // --------------------------------------------------
 
   if (status === "loading") {
+
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#05070c]">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
-      </div>
+      <LoadingScreen />
     );
+
   }
+
 
   // --------------------------------------------------
   // BITÁCORA
   // --------------------------------------------------
 
   return (
+
     <div className="min-h-screen bg-[#05070c] font-sans antialiased">
+
       <div className="mx-auto flex max-w-5xl">
 
-        {/* MENÚ LATERAL */}
+
+        {/* =========================================
+            MENÚ LATERAL
+        ========================================= */}
 
         <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-white/[0.06] px-3 py-6 sm:flex">
 
+
+          {/* LOGO / NOMBRE */}
+
           <div className="mb-8 px-2.5">
+
             <p className="text-[16px] font-semibold tracking-tight text-cyan-300">
               Bitácora digital
             </p>
@@ -378,7 +654,11 @@ export default function App() {
             <p className="text-[13px] text-slate-400">
               de actualizaciones
             </p>
+
           </div>
+
+
+          {/* NAVEGACIÓN */}
 
           <nav className="flex flex-col gap-1">
 
@@ -404,13 +684,42 @@ export default function App() {
             />
 
           </nav>
+
+
+          {/* ESPACIO */}
+
+          <div className="flex-1" />
+
+
+          {/* CERRAR SESIÓN */}
+
+          <button
+            onClick={handleLogout}
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-slate-400 transition hover:bg-white/5 hover:text-white"
+          >
+
+            <LogOut
+              size={19}
+            />
+
+            <span>
+              Cerrar sesión
+            </span>
+
+          </button>
+
         </aside>
 
-        {/* CONTENIDO */}
+
+        {/* =========================================
+            CONTENIDO
+        ========================================= */}
 
         <main className="min-h-screen flex-1 pb-24 sm:pb-0">
 
+
           {view === "inicio" && (
+
             <InicioView
               updates={enrichedUpdates}
               companies={companies}
@@ -418,9 +727,12 @@ export default function App() {
               onEdit={openEdit}
               onDelete={setDeleteTarget}
             />
+
           )}
 
+
           {view === "historial" && (
+
             <HistorialView
               updates={enrichedUpdates}
               companies={companies}
@@ -428,26 +740,53 @@ export default function App() {
               onEdit={openEdit}
               onDelete={setDeleteTarget}
             />
+
           )}
 
+
           {view === "clientes" && (
+
             <ClientesView
               companies={companies}
               clients={clients}
               updates={updates}
-              onAddCompany={handleAddCompany}
-              onDeleteCompany={handleDeleteCompany}
-              onEditCompany={handleEditCompany}
-              onAddClient={handleAddClient}
-              onDeleteClient={handleDeleteClient}
-              onEditClient={handleEditClient}
+
+              onAddCompany={
+                handleAddCompany
+              }
+
+              onDeleteCompany={
+                handleDeleteCompany
+              }
+
+              onEditCompany={
+                handleEditCompany
+              }
+
+              onAddClient={
+                handleAddClient
+              }
+
+              onDeleteClient={
+                handleDeleteClient
+              }
+
+              onEditClient={
+                handleEditClient
+              }
+
             />
+
           )}
 
         </main>
+
       </div>
 
-      {/* MENÚ MÓVIL */}
+
+      {/* =========================================
+          MENÚ MÓVIL
+      ========================================= */}
 
       <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-white/[0.06] bg-[#05070c]/95 px-2 py-1.5 backdrop-blur sm:hidden">
 
@@ -472,21 +811,47 @@ export default function App() {
           onClick={() => setView("clientes")}
         />
 
+        <button
+          onClick={handleLogout}
+          className="flex flex-1 flex-col items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] text-slate-400 transition hover:text-white"
+        >
+
+          <LogOut size={19} />
+
+          <span>
+            Salir
+          </span>
+
+        </button>
+
       </nav>
 
-      {/* BOTÓN NUEVA ACTUALIZACIÓN EN MÓVIL */}
+
+      {/* =========================================
+          BOTÓN NUEVA ACTUALIZACIÓN MÓVIL
+      ========================================= */}
 
       {view !== "inicio" && (
+
         <button
           onClick={openNew}
           className="fixed bottom-20 right-5 z-40 flex h-13 w-13 items-center justify-center rounded-full bg-cyan-400 p-3.5 text-[#04121a] shadow-[0_4px_20px_rgba(34,211,238,0.35)] transition-transform active:scale-95 sm:hidden"
           aria-label="Nueva actualización"
         >
-          <Plus size={22} strokeWidth={2.5} />
+
+          <Plus
+            size={22}
+            strokeWidth={2.5}
+          />
+
         </button>
+
       )}
 
-      {/* MODAL DE ACTUALIZACIÓN */}
+
+      {/* =========================================
+          MODAL DE ACTUALIZACIÓN
+      ========================================= */}
 
       <UpdateModal
         open={modalOpen}
@@ -497,23 +862,39 @@ export default function App() {
         initial={editingUpdate}
       />
 
-      {/* CONFIRMAR ELIMINACIÓN */}
+
+      {/* =========================================
+          CONFIRMACIÓN DE ELIMINACIÓN
+      ========================================= */}
 
       <ConfirmDialog
         open={!!deleteTarget}
+
         title={
           deleteTarget?.note
             ? "Eliminar actualización"
             : "Confirmar eliminación"
         }
+
         message={
           deleteTarget?.note
             ? "¿Eliminar esta actualización? Esta acción no se puede deshacer."
             : ""
         }
-        onCancel={() => setDeleteTarget(null)}
-        onConfirm={handleDeleteUpdate}
+
+        onCancel={() =>
+          setDeleteTarget(null)
+        }
+
+        onConfirm={
+          handleDeleteUpdate
+        }
       />
+
+
+      {/* =========================================
+          TOAST
+      ========================================= */}
 
       <Toast
         show={toast.show}
@@ -524,12 +905,37 @@ export default function App() {
   );
 }
 
-// --------------------------------------------------
-// MENSAJE DE PANTALLA COMPLETA
-// --------------------------------------------------
 
-function FullScreenMessage({ title, detail }) {
+// ==================================================
+// PANTALLA DE CARGA
+// ==================================================
+
+function LoadingScreen() {
+
   return (
+
+    <div className="flex min-h-screen items-center justify-center bg-[#05070c]">
+
+      <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
+
+    </div>
+
+  );
+
+}
+
+
+// ==================================================
+// MENSAJE DE PANTALLA COMPLETA
+// ==================================================
+
+function FullScreenMessage({
+  title,
+  detail,
+}) {
+
+  return (
+
     <div className="flex min-h-screen items-center justify-center bg-[#05070c] px-6">
 
       <div className="max-w-md rounded-2xl border border-white/10 bg-[#0d1420] p-6">
@@ -545,5 +951,7 @@ function FullScreenMessage({ title, detail }) {
       </div>
 
     </div>
+
   );
+
 }
