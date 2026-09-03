@@ -5,7 +5,10 @@ import UpdateModal from "./components/UpdateModal.jsx";
 import InicioView from "./components/InicioView.jsx";
 import HistorialView from "./components/HistorialView.jsx";
 import ClientesView from "./components/ClientesView.jsx";
-import { supabaseConfigured } from "./lib/supabaseClient";
+import Login from "./components/Login.jsx";
+
+import { supabase, supabaseConfigured } from "./lib/supabaseClient";
+
 import {
   fetchCompanies,
   fetchClients,
@@ -23,8 +26,12 @@ import {
 } from "./lib/api";
 
 export default function App() {
-  const [status, setStatus] = useState("loading"); // loading | ready | error | unconfigured
+  const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
+
+  // AUTENTICACIÓN
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   const [companies, setCompanies] = useState([]);
   const [clients, setClients] = useState([]);
@@ -38,78 +45,162 @@ export default function App() {
 
   const showToast = (message) => {
     setToast({ show: true, message });
-    setTimeout(() => setToast({ show: false, message: "" }), 2200);
+
+    setTimeout(() => {
+      setToast({ show: false, message: "" });
+    }, 2200);
   };
 
+  // --------------------------------------------------
+  // AUTENTICACIÓN CON SUPABASE
+  // --------------------------------------------------
+
+  useEffect(() => {
+    if (!supabaseConfigured) {
+      setAuthLoading(false);
+      return;
+    }
+
+    let mounted = true;
+
+    const checkSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (mounted) {
+        setUser(session?.user ?? null);
+        setAuthLoading(false);
+      }
+    };
+
+    checkSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // --------------------------------------------------
+  // CARGAR INFORMACIÓN DE LA BITÁCORA
+  // --------------------------------------------------
+
   const loadAll = useCallback(async () => {
-    const [c, cl, u] = await Promise.all([fetchCompanies(), fetchClients(), fetchUpdates()]);
+    const [c, cl, u] = await Promise.all([
+      fetchCompanies(),
+      fetchClients(),
+      fetchUpdates(),
+    ]);
+
     setCompanies(c);
     setClients(cl);
     setUpdates(u);
   }, []);
 
   useEffect(() => {
-    if (!supabaseConfigured) {
-      setStatus("unconfigured");
+    if (!supabaseConfigured || !user) {
       return;
     }
+
     (async () => {
       try {
+        setStatus("loading");
+
         await seedIfEmpty();
         await loadAll();
+
         setStatus("ready");
       } catch (err) {
         console.error(err);
-        setErrorMsg(err.message || "Error desconocido al conectar con Supabase.");
+
+        setErrorMsg(
+          err.message ||
+            "Error desconocido al conectar con Supabase."
+        );
+
         setStatus("error");
       }
     })();
-  }, [loadAll]);
+  }, [user, loadAll]);
 
-  // Actualizaciones enriquecidas con el nombre de empresa/cliente para
-  // mostrarlas en pantalla (la tabla "updates" solo guarda los ids).
+  // --------------------------------------------------
+  // ACTUALIZACIONES ENRIQUECIDAS
+  // --------------------------------------------------
+
   const enrichedUpdates = useMemo(
     () =>
       updates.map((u) => ({
         ...u,
-        companyName: companies.find((c) => c.id === u.companyId)?.name ?? "Empresa eliminada",
-        clientName: clients.find((c) => c.id === u.clientId)?.name ?? "Cliente eliminado",
+        companyName:
+          companies.find((c) => c.id === u.companyId)?.name ??
+          "Empresa eliminada",
+
+        clientName:
+          clients.find((c) => c.id === u.clientId)?.name ??
+          "Cliente eliminado",
       })),
     [updates, companies, clients]
   );
+
+  // --------------------------------------------------
+  // ACTUALIZACIONES
+  // --------------------------------------------------
 
   const openNew = () => {
     setEditingUpdate(null);
     setModalOpen(true);
   };
+
   const openEdit = (u) => {
     setEditingUpdate(u);
     setModalOpen(true);
   };
 
   const handleSaveUpdate = async (fields) => {
-    if (editingUpdate) {
-      await editUpdateRow(editingUpdate.id, fields);
-    } else {
-      await createUpdateRow(fields);
+    try {
+      if (editingUpdate) {
+        await editUpdateRow(editingUpdate.id, fields);
+      } else {
+        await createUpdateRow(fields);
+      }
+
+      await loadAll();
+
+      setModalOpen(false);
+
+      showToast("Actualización guardada ✓");
+    } catch (err) {
+      console.error(err);
+      showToast("No se pudo guardar la actualización.");
     }
-    await loadAll();
-    setModalOpen(false);
-    showToast("Actualización guardada ✓");
   };
 
   const handleDeleteUpdate = async () => {
     try {
       await removeUpdate(deleteTarget.id);
+
       await loadAll();
+
       showToast("Actualización eliminada");
     } catch (err) {
       console.error(err);
+
       showToast("No se pudo eliminar. Intenta de nuevo.");
     } finally {
       setDeleteTarget(null);
     }
   };
+
+  // --------------------------------------------------
+  // EMPRESAS
+  // --------------------------------------------------
 
   const handleAddCompany = async (name) => {
     try {
@@ -120,6 +211,7 @@ export default function App() {
       showToast("No se pudo agregar la empresa.");
     }
   };
+
   const handleEditCompany = async (id, name) => {
     try {
       await renameCompany(id, name);
@@ -129,6 +221,7 @@ export default function App() {
       showToast("No se pudo renombrar la empresa.");
     }
   };
+
   const handleDeleteCompany = async (id) => {
     try {
       await removeCompany(id);
@@ -139,6 +232,10 @@ export default function App() {
     }
   };
 
+  // --------------------------------------------------
+  // CLIENTES
+  // --------------------------------------------------
+
   const handleAddClient = async (companyId, name) => {
     try {
       await createClientRow(companyId, name);
@@ -148,6 +245,7 @@ export default function App() {
       showToast("No se pudo agregar el cliente.");
     }
   };
+
   const handleEditClient = async (id, name) => {
     try {
       await renameClient(id, name);
@@ -157,6 +255,7 @@ export default function App() {
       showToast("No se pudo renombrar el cliente.");
     }
   };
+
   const handleDeleteClient = async (id) => {
     try {
       await removeClient(id);
@@ -169,21 +268,62 @@ export default function App() {
     }
   };
 
-  if (status === "unconfigured") {
+  // --------------------------------------------------
+  // SUPABASE NO CONFIGURADO
+  // --------------------------------------------------
+
+  if (!supabaseConfigured) {
     return (
       <FullScreenMessage
         title="Falta configurar Supabase"
         detail={
           <>
-            Copia <code className="rounded bg-white/10 px-1.5 py-0.5">.env.example</code> a{" "}
-            <code className="rounded bg-white/10 px-1.5 py-0.5">.env</code> y coloca ahí tu{" "}
-            <code className="rounded bg-white/10 px-1.5 py-0.5">VITE_SUPABASE_URL</code> y{" "}
-            <code className="rounded bg-white/10 px-1.5 py-0.5">VITE_SUPABASE_ANON_KEY</code>. Revisa el README para el resto de los pasos.
+            Copia{" "}
+            <code className="rounded bg-white/10 px-1.5 py-0.5">
+              .env.example
+            </code>{" "}
+            a{" "}
+            <code className="rounded bg-white/10 px-1.5 py-0.5">
+              .env
+            </code>{" "}
+            y coloca ahí tu{" "}
+            <code className="rounded bg-white/10 px-1.5 py-0.5">
+              VITE_SUPABASE_URL
+            </code>{" "}
+            y{" "}
+            <code className="rounded bg-white/10 px-1.5 py-0.5">
+              VITE_SUPABASE_ANON_KEY
+            </code>
+            .
           </>
         }
       />
     );
   }
+
+  // --------------------------------------------------
+  // COMPROBANDO LOGIN
+  // --------------------------------------------------
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#05070c]">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-cyan-400/30 border-t-cyan-400" />
+      </div>
+    );
+  }
+
+  // --------------------------------------------------
+  // SI NO HAY USUARIO → MOSTRAR LOGIN
+  // --------------------------------------------------
+
+  if (!user) {
+    return <Login />;
+  }
+
+  // --------------------------------------------------
+  // ERROR DE SUPABASE
+  // --------------------------------------------------
 
   if (status === "error") {
     return (
@@ -192,12 +332,23 @@ export default function App() {
         detail={
           <>
             <p className="mb-2">{errorMsg}</p>
-            <p>Verifica que ejecutaste el SQL de <code className="rounded bg-white/10 px-1.5 py-0.5">supabase/schema.sql</code> y que las credenciales del archivo <code className="rounded bg-white/10 px-1.5 py-0.5">.env</code> son correctas.</p>
+
+            <p>
+              Verifica que ejecutaste el SQL de{" "}
+              <code className="rounded bg-white/10 px-1.5 py-0.5">
+                supabase/schema.sql
+              </code>{" "}
+              y que las credenciales de Supabase son correctas.
+            </p>
           </>
         }
       />
     );
   }
+
+  // --------------------------------------------------
+  // CARGANDO LA BITÁCORA
+  // --------------------------------------------------
 
   if (status === "loading") {
     return (
@@ -207,28 +358,78 @@ export default function App() {
     );
   }
 
+  // --------------------------------------------------
+  // BITÁCORA
+  // --------------------------------------------------
+
   return (
     <div className="min-h-screen bg-[#05070c] font-sans antialiased">
       <div className="mx-auto flex max-w-5xl">
+
+        {/* MENÚ LATERAL */}
+
         <aside className="sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r border-white/[0.06] px-3 py-6 sm:flex">
+
           <div className="mb-8 px-2.5">
-            <p className="text-[16px] font-semibold tracking-tight text-cyan-300">Bitácora digital</p>
-            <p className="text-[13px] text-slate-400">de actualizaciones</p>
+            <p className="text-[16px] font-semibold tracking-tight text-cyan-300">
+              Bitácora digital
+            </p>
+
+            <p className="text-[13px] text-slate-400">
+              de actualizaciones
+            </p>
           </div>
+
           <nav className="flex flex-col gap-1">
-            <NavItem icon={Home} label="Inicio" active={view === "inicio"} onClick={() => setView("inicio")} />
-            <NavItem icon={History} label="Historial" active={view === "historial"} onClick={() => setView("historial")} />
-            <NavItem icon={Users} label="Clientes" active={view === "clientes"} onClick={() => setView("clientes")} />
+
+            <NavItem
+              icon={Home}
+              label="Inicio"
+              active={view === "inicio"}
+              onClick={() => setView("inicio")}
+            />
+
+            <NavItem
+              icon={History}
+              label="Historial"
+              active={view === "historial"}
+              onClick={() => setView("historial")}
+            />
+
+            <NavItem
+              icon={Users}
+              label="Clientes"
+              active={view === "clientes"}
+              onClick={() => setView("clientes")}
+            />
+
           </nav>
         </aside>
 
+        {/* CONTENIDO */}
+
         <main className="min-h-screen flex-1 pb-24 sm:pb-0">
+
           {view === "inicio" && (
-            <InicioView updates={enrichedUpdates} companies={companies} onNew={openNew} onEdit={openEdit} onDelete={setDeleteTarget} />
+            <InicioView
+              updates={enrichedUpdates}
+              companies={companies}
+              onNew={openNew}
+              onEdit={openEdit}
+              onDelete={setDeleteTarget}
+            />
           )}
+
           {view === "historial" && (
-            <HistorialView updates={enrichedUpdates} companies={companies} clients={clients} onEdit={openEdit} onDelete={setDeleteTarget} />
+            <HistorialView
+              updates={enrichedUpdates}
+              companies={companies}
+              clients={clients}
+              onEdit={openEdit}
+              onDelete={setDeleteTarget}
+            />
           )}
+
           {view === "clientes" && (
             <ClientesView
               companies={companies}
@@ -242,14 +443,38 @@ export default function App() {
               onEditClient={handleEditClient}
             />
           )}
+
         </main>
       </div>
 
+      {/* MENÚ MÓVIL */}
+
       <nav className="fixed inset-x-0 bottom-0 z-40 flex border-t border-white/[0.06] bg-[#05070c]/95 px-2 py-1.5 backdrop-blur sm:hidden">
-        <NavItem icon={Home} label="Inicio" active={view === "inicio"} onClick={() => setView("inicio")} />
-        <NavItem icon={History} label="Historial" active={view === "historial"} onClick={() => setView("historial")} />
-        <NavItem icon={Users} label="Clientes" active={view === "clientes"} onClick={() => setView("clientes")} />
+
+        <NavItem
+          icon={Home}
+          label="Inicio"
+          active={view === "inicio"}
+          onClick={() => setView("inicio")}
+        />
+
+        <NavItem
+          icon={History}
+          label="Historial"
+          active={view === "historial"}
+          onClick={() => setView("historial")}
+        />
+
+        <NavItem
+          icon={Users}
+          label="Clientes"
+          active={view === "clientes"}
+          onClick={() => setView("clientes")}
+        />
+
       </nav>
+
+      {/* BOTÓN NUEVA ACTUALIZACIÓN EN MÓVIL */}
 
       {view !== "inicio" && (
         <button
@@ -261,6 +486,8 @@ export default function App() {
         </button>
       )}
 
+      {/* MODAL DE ACTUALIZACIÓN */}
+
       <UpdateModal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
@@ -270,26 +497,53 @@ export default function App() {
         initial={editingUpdate}
       />
 
+      {/* CONFIRMAR ELIMINACIÓN */}
+
       <ConfirmDialog
         open={!!deleteTarget}
-        title={deleteTarget?.note ? "Eliminar actualización" : "Confirmar eliminación"}
-        message={deleteTarget?.note ? "¿Eliminar esta actualización? Esta acción no se puede deshacer." : ""}
+        title={
+          deleteTarget?.note
+            ? "Eliminar actualización"
+            : "Confirmar eliminación"
+        }
+        message={
+          deleteTarget?.note
+            ? "¿Eliminar esta actualización? Esta acción no se puede deshacer."
+            : ""
+        }
         onCancel={() => setDeleteTarget(null)}
         onConfirm={handleDeleteUpdate}
       />
 
-      <Toast show={toast.show} message={toast.message} />
+      <Toast
+        show={toast.show}
+        message={toast.message}
+      />
+
     </div>
   );
 }
 
+// --------------------------------------------------
+// MENSAJE DE PANTALLA COMPLETA
+// --------------------------------------------------
+
 function FullScreenMessage({ title, detail }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-[#05070c] px-6">
+
       <div className="max-w-md rounded-2xl border border-white/10 bg-[#0d1420] p-6">
-        <h1 className="mb-2 text-[17px] font-medium text-cyan-300">{title}</h1>
-        <div className="text-sm leading-relaxed text-slate-400">{detail}</div>
+
+        <h1 className="mb-2 text-[17px] font-medium text-cyan-300">
+          {title}
+        </h1>
+
+        <div className="text-sm leading-relaxed text-slate-400">
+          {detail}
+        </div>
+
       </div>
+
     </div>
   );
 }
